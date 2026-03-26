@@ -17,6 +17,9 @@ uilist=nil
 downloading=false
 download_available=0
 instrument_current=1
+favorites={}
+display_order={}
+separator_index=0
 available_instruments={
   -- {name="12string piano",size=40*1.5},
   -- {name="alto sax choir",size=17*1.5},
@@ -99,6 +102,7 @@ function init()
   os.execute(cmd)
 
   skeys=mxsamples:new()
+  load_favorites()
   update_uilist()
 
   setup_midi()
@@ -110,7 +114,15 @@ function init()
     local last_instrument_current=tonumber(content)
     if last_instrument_current~=nil then
       instrument_current=last_instrument_current
-      uilist.index=instrument_current
+      -- find display position for instrument_current
+      local display_pos=1
+      for di,ri in ipairs(display_order) do
+        if ri==instrument_current then
+          display_pos=di
+          break
+        end
+      end
+      uilist.index=display_pos
       update_uilist()
     end
   end
@@ -209,9 +221,7 @@ function setup_midi()
 end
 
 function update_uilist()
-  -- check if downloaded
-
-  items={}
+  -- phase 1: scan download status
   for i,a in ipairs(available_instruments) do
     available_instruments[i].id=string.gsub(a.name," ","_")
     local files_for=os.capture("ls /home/we/dust/audio/mx.samples/"..available_instruments[i].id.."/*.wav")
@@ -219,24 +229,93 @@ function update_uilist()
     if string.find(files_for,".wav") then
       downloaded=true
     end
-    local s=a.name
     available_instruments[i].downloaded=downloaded
     available_instruments[i].active=(downloaded and i==instrument_current)
-    if not downloaded then
-      s=s.." - get?"
-    end
-    if available_instruments[i].active then
-      s='> '..s..' <'
-    else
-      s='  '..s
-    end
-    table.insert(items,s)
   end
+
+  -- phase 2: build display_order (favorites first, separator, then rest)
+  display_order={}
+  separator_index=0
+  local fav_count=0
+  for i,a in ipairs(available_instruments) do
+    if favorites[a.name] then
+      table.insert(display_order,i)
+      fav_count=fav_count+1
+    end
+  end
+  local non_fav_count=#available_instruments-fav_count
+  if fav_count>0 and non_fav_count>0 then
+    table.insert(display_order,0) -- 0 = separator
+    separator_index=fav_count+1
+  end
+  for i,a in ipairs(available_instruments) do
+    if not favorites[a.name] then
+      table.insert(display_order,i)
+    end
+  end
+
+  -- phase 3: build display strings
+  items={}
+  for _,ri in ipairs(display_order) do
+    if ri==0 then
+      table.insert(items,"  - - - - - - - - - -")
+    else
+      local a=available_instruments[ri]
+      local fav_prefix=favorites[a.name] and "* " or "  "
+      local s=a.name
+      if not a.downloaded then
+        s=s.." - get?"
+      end
+      if a.active then
+        s=">"..fav_prefix..s.." <"
+      else
+        s=" "..fav_prefix..s
+      end
+      table.insert(items,s)
+    end
+  end
+
+  -- phase 4: recreate ScrollingList
   local index=1
   if uilist~=nil then
     index=uilist.index
   end
   uilist=UI.ScrollingList.new(0,0,index,items)
+end
+
+function load_favorites()
+  favorites={}
+  local f=io.open(norns.state.data.."favorites","rb")
+  if f~=nil then
+    for line in f:lines() do
+      local name=line:match("^%s*(.-)%s*$")
+      if name~="" then
+        favorites[name]=true
+      end
+    end
+    f:close()
+  end
+end
+
+function save_favorites()
+  local f=io.open(norns.state.data.."favorites","w")
+  if f~=nil then
+    for _,a in ipairs(available_instruments) do
+      if favorites[a.name] then
+        f:write(a.name.."\n")
+      end
+    end
+    f:close()
+  end
+end
+
+function toggle_favorite(name)
+  if favorites[name] then
+    favorites[name]=nil
+  else
+    favorites[name]=true
+  end
+  save_favorites()
 end
 
 function os.capture(cmd,raw)
@@ -251,15 +330,43 @@ function os.capture(cmd,raw)
 end
 
 function enc(k,d)
-  uilist:set_index_delta(d,true)
+  if k==3 then
+    local ri=display_order[uilist.index]
+    if ri==nil or ri==0 then return end
+    local name=available_instruments[ri].name
+    if d>0 and not favorites[name] then
+      favorites[name]=true
+      save_favorites()
+      update_uilist()
+      -- find new display position
+      for di,r in ipairs(display_order) do
+        if r==ri then uilist.index=di break end
+      end
+    elseif d<0 and favorites[name] then
+      favorites[name]=nil
+      save_favorites()
+      update_uilist()
+      for di,r in ipairs(display_order) do
+        if r==ri then uilist.index=di break end
+      end
+    end
+  else
+    uilist:set_index_delta(d,false)
+    -- skip separator
+    if separator_index>0 and uilist.index==separator_index then
+      local skip=d>0 and 1 or -1
+      uilist:set_index_delta(skip,false)
+    end
+  end
 end
 
 function key(k,z)
   if z==1 then
-    local i=uilist.index
+    local i=display_order[uilist.index]
+    if i==nil or i==0 then return end
     if available_instruments[i].downloaded then
       instrument_current=i
-      f=io.open(norns.state.data.."last","w")
+      local f=io.open(norns.state.data.."last","w")
       f:write(instrument_current)
       f:close()
       update_uilist()
