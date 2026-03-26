@@ -1,4 +1,4 @@
--- mx.samples v1.4.3
+-- mx.samples.maxbecq v1.5
 -- download and play samples
 --
 -- llllllll.co/t/mxsamples
@@ -7,8 +7,9 @@
 -- 2. select a sample.
 -- 3. profit.
 
+local util = require 'util'
 local UI=require "ui"
-mxsamples=include("mx.samples/lib/mx.samples")
+mxsamples=include("lib/mx.samples")
 
 engine.name="MxSamples"
 skeys=nil
@@ -17,82 +18,80 @@ downloading=false
 download_available=0
 instrument_current=1
 available_instruments={
-  {name="12string piano",size=40*1.5},
-  {name="alto sax choir",size=17*1.5},
-  {name="angelic dobro",size=35},
-  {name="asat classic clean",size=28*1.5},
-  {name="ash harmonium",size=307*1.5},
-  {name="bedroom clarinet short",size=7*1.5},
-  {name="bedroom clarinet sustained",size=50*1.5},
-  {name="blackhole guitar",size=27*1.5},
-  {name="box violin",size=8*1.5},
-  {name="cello",size=22*1.5},
+  -- {name="12string piano",size=40*1.5},
+  -- {name="alto sax choir",size=17*1.5},
+  -- {name="angelic dobro",size=35},
+  -- {name="asat classic clean",size=28*1.5},
+  -- {name="ash harmonium",size=307*1.5},
+  -- {name="bedroom clarinet short",size=7*1.5},
+  -- {name="bedroom clarinet sustained",size=50*1.5},
+  -- {name="blackhole guitar",size=27*1.5},
+  -- {name="box violin",size=8*1.5},
+  -- {name="cello",size=22*1.5},
   {name="cello pad",size=4*1.5},
-  {name="claus piano",size=616},
+  -- {name="claus piano",size=616},
   {name="claus piano wpedal",size=614},
-  {name="cow pad",size=61},
+  -- {name="cow pad",size=61},
+  {name="Departure", size=6},
   {name="dictaphone",size=18},
-  {name="discord choir",size=18},
-  {name="doom drone",size=47},
-  {name="drums acoustic",size=31*1.5},
-  {name="drums snapping",size=1.5},
-  {name="drums violin",size=5},
-  {name="dyn evo choir slow",size=288*1.5},
-  {name="dyn evo choir fast",size=172*1.5},
-  {name="ebow guitar",size=137*1.5},
-  {name="epiphone guitar",size=5.9*1.5},
-  {name="epiano dx7",size=15},
-  {name="epiano r3",size=350},
-  {name="fender rhodes",size=102},
-  {name="fender strato vib",size=15*5.2},
-  {name="gentle vibes",size=206},
-  {name="glockenspiel",size=12*1.5},
-  {name="ghost piano",size=40*1.5},
-  {name="hannas melodica",size=40*1.5},
-  {name="hohner guitaret",size=137*1.5},
-  {name="harmonium",size=535},
-  {name="india ashberry dry",size=15},
+  -- {name="discord choir",size=18},
+  -- {name="doom drone",size=47},
+  -- {name="drums acoustic",size=31*1.5},
+  -- {name="drums snapping",size=1.5},
+  -- {name="drums violin",size=5},
+  -- {name="dyn evo choir slow",size=288*1.5},
+  -- {name="dyn evo choir fast",size=172*1.5},
+  -- {name="ebow guitar",size=137*1.5},
+  -- {name="epiphone guitar",size=5.9*1.5},
+  -- {name="epiano dx7",size=15},
+  -- {name="epiano r3",size=350},
+  {name="Fazioli", size=350},
+  -- {name="fender rhodes",size=102},
+  -- {name="fender strato vib",size=15*5.2},
+  -- {name="gentle vibes",size=206},
+  -- {name="glockenspiel",size=12*1.5},
+  -- {name="ghost piano",size=40*1.5},
+  -- {name="hannas melodica",size=40*1.5},
+  -- {name="hohner guitaret",size=137*1.5},
+  -- {name="harmonium",size=535},
+  -- {name="india ashberry dry",size=15},
   {name="kawai felt",size=62.8*2},
-  {name="lamp",size=4},
+  -- {name="lamp",size=4},
   {name="kalimba",size=217*1.5},
-  {name="marimba red",size=3.8*1.5},
-  {name="marimba white",size=3.8*1.5},
+  -- {name="marimba red",size=3.8*1.5},
+  -- {name="marimba white",size=3.8*1.5},
   {name="music box",size=20},
-  {name="november piano",size=5*1.5},
+  -- {name="november piano",size=5*1.5},
   {name="piano soft",size=53.3*1.5},
-  {name="phils banjo",size=3.8*1.5},
-  {name="raindrop c40",size=7},
-  {name="reverse piano",size=7},
-  {name="sheltone organ",size=31*1.5},
-  {name="steel string",size=33*1.5},
-  {name="steinway model b",size=128*1.5},
-  {name="strat 62",size=26*1.5},
+  -- {name="phils banjo",size=3.8*1.5},
+  -- {name="raindrop c40",size=7},
+  -- {name="reverse piano",size=7},
+  -- {name="sheltone organ",size=31*1.5},
+  -- {name="steel string",size=33*1.5},
+  -- {name="steinway model b",size=128*1.5},
+  -- {name="strat 62",size=26*1.5},
   {name="string spurs",size=221},
-  {name="string spurs swells",size=31},
-  {name="sufjanwho",size=1.5*7.3},
-  {name="sweep bassoon",size=50},
-  {name="sweep celli",size=50},
-  {name="sweep clarinet",size=50},
-  {name="sweep euphonium",size=50},
-  {name="sweep flute",size=50},
-  {name="sweep horns",size=50},
-  {name="sweep oboe",size=50},
-  {name="sweep trombone",size=50},
-  {name="sweep trumpet",size=50},
-  {name="sweep violins",size=50},
-  {name="tatak piano",size=127*1.5},
-  {name="toypiano barbie",size=55*1.5},
-  {name="toypiano base",size=10*1.5},
-  {name="toypiano blue",size=29*1.5},
-  {name="toypiano decreipt",size=11*1.5},
-  {name="toypiano madeline",size=8*1.5},
-  {name="toypiano tatak",size=62*1.5},
-  {name="telecaster",size=7.1*1.5},
-  {name="trembling radiator",size=16*1.5},
-  {name="trembling radiator ebow",size=16*1.5},
-  {name="uilleann pipes",size=117},
+  -- {name="string spurs swells",size=31},
+  -- {name="sufjanwho",size=1.5*7.3},
+  -- {name="sweep bassoon",size=50},
+  -- {name="sweep celli",size=50},
+  -- {name="sweep clarinet",size=50},
+  -- {name="sweep euphonium",size=50},
+  -- {name="sweep flute",size=50},
+  -- {name="sweep horns",size=50},
+  -- {name="sweep oboe",size=50},
+  -- {name="sweep trombone",size=50},
+  -- {name="sweep trumpet",size=50},
+  -- {name="sweep violins",size=50},
+  -- {name="tatak piano",size=127*1.5},
+  -- {name="telecaster",size=7.1*1.5},
+  -- {name="trembling radiator",size=16*1.5},
+  -- {name="trembling radiator ebow",size=16*1.5},
+  -- {name="uilleann pipes",size=117},
   {name="wind chimes",size=5},
 }
+
+local AUTOSAVE_METRO_TIME = 10
 
 function init()
   cmd="mkdir -p ".._path.audio.."mx.samples/"
@@ -104,7 +103,7 @@ function init()
 
   setup_midi()
 
-  local f=io.open(_path.data.."mx.samples/last","rb")
+  local f=io.open(norns.state.data.."last","rb")
   if f~=nil then
     local content=f:read("*all")
     f:close()
@@ -116,13 +115,24 @@ function init()
     end
   end
 
+  -- init crow outputs for CV/gate
+  crow.output[3].action = "{to(5,0),to(0,0.01)}"
+  crow.output[4].volts = 0
+
   -- set default delay
   params:set("mxsamples_delay_rate",4)
   params:set("mxsamples_delay_times",4)
 
+	load_autosave_preset()
+
   print("available instruments: ")
   tab.print(skeys:list_instruments())
   clock.run(redraw_clock)
+  
+  	-- On lance les tâches de fond
+	autosave_metro = metro.init(autosave_tasks, AUTOSAVE_METRO_TIME)
+  autosave_metro:start()
+  
 end
 
 function setup_midi()
@@ -156,7 +166,11 @@ function setup_midi()
           do return end
         end
         if d.type=="note_on" then
+          -- skeys:on({name=available_instruments[instrument_current].id,midi=data[2],velocity=util.clamp(data[3], 0, 0.8)})
           skeys:on({name=available_instruments[instrument_current].id,midi=data[2],velocity=data[3]})
+          -- send to crow: pitch on output 4 (V/oct), gate on output 3
+          crow.output[4].volts = (data[2] - 60) / 12
+          crow.output[3].execute()
         elseif d.type=="note_off" then
           skeys:off({name=available_instruments[instrument_current].id,midi=data[2]})
         elseif d.cc==64 then -- sustain pedal
@@ -245,7 +259,7 @@ function key(k,z)
     local i=uilist.index
     if available_instruments[i].downloaded then
       instrument_current=i
-      f=io.open(_path.data.."mx.samples/last","w")
+      f=io.open(norns.state.data.."last","w")
       f:write(instrument_current)
       f:close()
       update_uilist()
@@ -314,3 +328,25 @@ end
 function rerun()
   norns.script.load(norns.state.script)
 end
+
+function autosave_tasks()
+  -- don't autosave on the first run. that way when you initially load the app
+  -- we don't overwrite the autosave from before (which would defeat the purpose)
+  if autosave_metro_first_run then
+    autosave_metro_first_run = false
+    return
+  end
+
+  save_autosave_preset()
+end
+
+function save_autosave_preset()
+  params:write(norns.state.data.."autosave.pset", "autosave")
+end
+
+function load_autosave_preset()
+  params:read(norns.state.data.."autosave.pset")
+  params:bang()
+  print("Chargement des données automatiquement sauvegardées")
+end
+

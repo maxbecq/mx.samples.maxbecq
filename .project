@@ -1,0 +1,21 @@
+{
+  "file_info": {
+    "version": 1,
+    "kind": "project_metadata"
+  },
+  "installed_on": "2024-03-21T22:07:37.158201226+01:00",
+  "updated_on": "0001-01-01T00:00:00Z",
+  "project_url": "https://github.com/maxbecq/mx.samples.maxbecq",
+  "catalog_entry": {
+    "project_name": "mx.samples.maxbecq",
+    "project_url": "https://github.com/maxbecq/mx.samples.maxbecq",
+    "author": "maxbecq",
+    "description": "fork of mx.samples with crow CV/gate output, velocity range, autosave, and curated instruments",
+    "discussion_url": "https://llllllll.co/t/mx-samples/41400",
+    "tags": [
+      "synth",
+      "midi",
+      "crow"
+    ]
+  }
+}
