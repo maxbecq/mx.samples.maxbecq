@@ -5,6 +5,7 @@ Engine_MxSamples : CroneEngine {
 
 	// <mxsamples>
 	var sampleBuffMxSamples;
+	var sampleBuffChannels;
 	var sampleBuffMxSamplesDelay;
 	var mxsamplesMaxVoices=40;
 	var mxsamplesFX;
@@ -32,9 +33,10 @@ Engine_MxSamples : CroneEngine {
 
 		context.server.sync;
 
-		sampleBuffMxSamples = Array.fill(80, { arg i; 
+		sampleBuffMxSamples = Array.fill(80, { arg i;
 			Buffer.new(context.server);
 		});
+		sampleBuffChannels = Array.fill(80, { 2 }); // défaut stéréo tant que non chargé
 		sampleBuffMxSamplesDelay = Buffer.alloc(context.server,48000,2);
 
 		SynthDef("mxfx",{ 
@@ -63,46 +65,58 @@ Engine_MxSamples : CroneEngine {
 			Out.ar(out,snd2);
 		}).add;
 
-		SynthDef("mxPlayer",{ 
-				arg outDelay,outReverb,bufnum, amp=0.0, t_trig=0,envgate=1,name=1,
-				attack=0.015,decay=1,release=2,sustain=0.9,
-				sampleStart=0,sampleEnd=1,rate=1,pan=0,
-				lpf=20000,hpf=10,delaySend=0,reverbSend=0;
+		// build a mono (mxPlayer1) and a stereo (mxPlayer2) variant; numCh is fixed
+		// at compile time so each produces the correct graph for its buffer type
+		[1, 2].do({ arg numCh;
+			SynthDef("mxPlayer" ++ numCh,{
+					arg outDelay,outReverb,bufnum, amp=0.0, t_trig=0,envgate=1,name=1,
+					attack=0.015,decay=1,release=2,sustain=0.9,
+					sampleStart=0,sampleEnd=1,rate=1,pan=0,
+					lpf=20000,hpf=10,delaySend=0,reverbSend=0;
 
-				// vars
-				var ender,snd;
+					// vars
+					var ender,snd;
 
-				ender = EnvGen.ar(
-					Env.new(
-						curve: 'cubed',
-						levels: [0,1,sustain,0],
-						times: [attack+0.015,decay,release],
-						releaseNode: 2,
-					),
-					gate: envgate,
-				);
-				
-				snd = PlayBuf.ar(2, bufnum,
-					rate:BufRateScale.kr(bufnum)*rate,
-					startPos: ((sampleEnd*(rate<0))*BufFrames.kr(bufnum))+(sampleStart/1000*48000),
-					trigger:t_trig,
-				);
-				snd = LPF.ar(snd,lpf);
-				snd = HPF.ar(snd,hpf);
-				snd = Mix.ar([
-					Pan2.ar(snd[0],-1+(2*pan),amp),
-					Pan2.ar(snd[1],1+(2*pan),amp),
-				]);
-				snd = snd * amp * ender;
+					ender = EnvGen.ar(
+						Env.new(
+							curve: 'cubed',
+							levels: [0,1,sustain,0],
+							times: [attack+0.015,decay,release],
+							releaseNode: 2,
+						),
+						gate: envgate,
+					);
 
-				// SendTrig.kr(Impulse.kr(1),name,1);
-				DetectSilence.ar(snd,doneAction:2);
-				// just in case, release after 1 minute
-				FreeSelf.kr(TDelay.kr(DC.kr(1),60));
-				Out.ar(outDelay,snd*delaySend);
-				Out.ar(outReverb,snd*reverbSend);
-				Out.ar(0,snd)
-		}).add;	
+					snd = PlayBuf.ar(numCh, bufnum,
+						rate:BufRateScale.kr(bufnum)*rate,
+						startPos: ((sampleEnd*(rate<0))*BufFrames.kr(bufnum))+(sampleStart/1000*48000),
+						trigger:t_trig,
+					);
+					snd = LPF.ar(snd,lpf);
+					snd = HPF.ar(snd,hpf);
+					if (numCh == 1, {
+						// mono: même signal dans les deux Pan2 → centré à pan=0, sans décorrélation
+						snd = Mix.ar([
+							Pan2.ar(snd,-1+(2*pan),amp),
+							Pan2.ar(snd,1+(2*pan),amp),
+						]);
+					}, {
+						snd = Mix.ar([
+							Pan2.ar(snd[0],-1+(2*pan),amp),
+							Pan2.ar(snd[1],1+(2*pan),amp),
+						]);
+					});
+					snd = snd * amp * ender;
+
+					// SendTrig.kr(Impulse.kr(1),name,1);
+					DetectSilence.ar(snd,doneAction:2);
+					// just in case, release after 1 minute
+					FreeSelf.kr(TDelay.kr(DC.kr(1),60));
+					Out.ar(outDelay,snd*delaySend);
+					Out.ar(outReverb,snd*reverbSend);
+					Out.ar(0,snd)
+			}).add;
+		});
 
 		// initialize fx synth and bus
 		context.server.sync;
@@ -136,12 +150,16 @@ Engine_MxSamples : CroneEngine {
 		});
 		this.addCommand("mxsamplesload","is", { arg msg;
 			// lua is sending 0-index
-			sampleBuffMxSamples[msg[1]].free;
-			sampleBuffMxSamples[msg[1]] = Buffer.read(context.server,msg[2]);
+			var i = msg[1];
+			sampleBuffMxSamples[i].free;
+			sampleBuffMxSamples[i] = Buffer.read(context.server, msg[2], action: { arg buf;
+				sampleBuffChannels[i] = buf.numChannels;
+			});
 		});
 
 		this.addCommand("mxsampleson","iiffffffffffff", { arg msg;
 			var name=msg[1];
+			var numCh = min(sampleBuffChannels[msg[2]], 2); // 1→mono, 2→stéréo, >2→best-effort stéréo
 			if (mxsamplesVoices.at(name)!=nil,{
 				if (mxsamplesVoices.at(name).isRunning==true,{
 					("stealing "++name).postln;
@@ -149,7 +167,7 @@ Engine_MxSamples : CroneEngine {
 				});
 			});
 			mxsamplesVoices.put(name,
-				Synth.before(mxsamplesFX,"mxPlayer",[
+				Synth.before(mxsamplesFX,"mxPlayer" ++ numCh,[
 					\t_trig,1,
 					\outDelay,mxsamplesBusDelay,
 					\outReverb,mxsamplesBusReverb,
