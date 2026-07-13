@@ -127,6 +127,11 @@ function init()
     end
   end
 
+  -- precharge l'instrument courant hors du hot path audio (evite les xruns au jeu)
+  if available_instruments[instrument_current].downloaded then
+    skeys:preload(available_instruments[instrument_current].id)
+  end
+
   -- init crow outputs for CV/gate
   crow.output[3].action = "{to(5,0),to(0,0.01)}"
   crow.output[4].volts = 0
@@ -370,6 +375,8 @@ function key(k,z)
       f:write(instrument_current)
       f:close()
       update_uilist()
+      -- precharge le nouvel instrument hors du hot path audio
+      skeys:preload(available_instruments[i].id)
     elseif download_available>0 then
       if k==2 then
         download_available=0
@@ -382,6 +389,7 @@ function key(k,z)
           instrument_current=download_available
           update_uilist()
           skeys:add_folder(_path.audio.."mx.samples/"..available_instruments[download_available].id.."/")
+          skeys:preload(available_instruments[download_available].id)
           download_available=0
           downloading=false
           redraw()

@@ -96,6 +96,7 @@ function MxSamples:new(args)
   for i=1,MaxVoices do -- initiate with 40 voices
     l.voice[i]={age=current_time(),active={name="",midi=0}}
   end
+  l.max_active=MaxVoices -- nb de voix reellement utilisables (reglable via max_voices)
 
   -- lets add files
   local sample_folders=list_files(_path.audio.."mx.samples/")
@@ -189,6 +190,13 @@ function MxSamples:new(args)
     id="mxsamples_delay_send",
     name="delay send",
   controlspec=controlspec.new(0,100,'lin',0,0,'%',1/100)}
+  -- l'FX (reverb+delay) ne tourne que si un send > 0 : economie CPU quand inutilise
+  local function update_fx()
+    if engine.name~="MxSamples" then return end
+    l:fx(params:get("mxsamples_reverb_send")>0 or params:get("mxsamples_delay_send")>0)
+  end
+  params:set_action("mxsamples_reverb_send",update_fx)
+  params:set_action("mxsamples_delay_send",update_fx)
   params:add {
     type='control',
     id="mxsamples_delay_times",
@@ -244,11 +252,27 @@ function MxSamples:new(args)
 end
 
 function MxSamples:max_voices(num_voices)
-  if num_voices<MaxVoices then
-    engine.mxsamplesvoicenum(num_voices) -- release unused voices
-    for i=num_voices,MaxVoices do
-      self.voice[i]=nil
+  -- limite le nb de voix simultanees (reversible, testable a chaud)
+  num_voices=util.clamp(math.floor(num_voices),1,MaxVoices)
+  -- libere les voix qui sortent de la plage active
+  for i=num_voices+1,self.max_active do
+    if self.voice[i]~=nil and self.voice[i].active.midi~=0 then
+      engine.mxsamplesoff(i)
+      self.voice[i]={age=current_time(),active={name="",midi=0}}
     end
+  end
+  self.max_active=num_voices
+  if self.debug then
+    print("mx.samples max_voices: "..num_voices)
+  end
+end
+
+function MxSamples:fx(on)
+  -- active/desactive le synth FX (reverb+delay). off = gros gain CPU si inutilise.
+  if on==nil then on=true end
+  engine.mxsamplesfx(on and 1 or 0)
+  if self.debug then
+    print("mx.samples fx: "..(on and "on" or "off"))
   end
 end
 
@@ -311,6 +335,51 @@ function MxSamples:add(sample)
     self.instrument[sample.name]={}
   end
   table.insert(self.instrument[sample.name],sample)
+end
+
+function MxSamples:_load_into_buffer(name,i)
+  -- charge instrument[name][i] dans le prochain slot circulaire (0..79)
+  local sample=self.instrument[name][i]
+  sample.buffer=self.buffer
+  self.buffers_used[self.buffer]={name=name,i=i}
+  engine.mxsamplesload(self.buffer,sample.filename)
+  self.buffer=self.buffer+1
+  if self.buffer>79 then
+    self.buffer=0
+  end
+  -- si le prochain slot est occupe, le marquer a reevincer
+  if self.buffers_used[self.buffer]~=nil then
+    local u=self.buffers_used[self.buffer]
+    self.instrument[u.name][u.i].buffer=-1
+  end
+end
+
+function MxSamples:preload(name,on_progress)
+  -- precharge tous les samples d'un instrument hors du hot path audio
+  name=name:gsub(" ","_")
+  local samples=self.instrument[name]
+  if samples==nil then
+    print("mx.samples preload: instrument inconnu '"..name.."'")
+    return
+  end
+  local total=#samples
+  local n=math.min(total,80) -- plafond dur = nb de buffers
+  if total>80 then
+    -- cap explicite, pas de troncature silencieuse
+    print("mx.samples preload: '"..name.."' a "..total.." samples ; prechargement des "..n.." premiers, le reste restera en lazy-load")
+  end
+  clock.run(function()
+    for i=1,n do
+      if samples[i].buffer<0 then
+        self:_load_into_buffer(name,i)
+        clock.sleep(0.02) -- etale l'I/O ; ~1,6 s pour 80 samples
+      end
+      if on_progress then on_progress(i,n) end
+    end
+    if self.debug then
+      print("mx.samples preload termine: "..name.." ("..n.."/"..total..")")
+    end
+  end)
 end
 
 function MxSamples:on(d)
@@ -448,22 +517,10 @@ function MxSamples:on(d)
 
   -- load sample if not loaded
   if sample_closest.buffer==-1 then
-    -- print("loading:")
-    -- tab.print(sample_closest)
     if self.debug then
       print("loading "..d.name.." "..sample_closest.i.." into buffer "..self.buffer)
     end
-    self.instrument[d.name][sample_closest.i].buffer=self.buffer
-    self.buffers_used[self.buffer]={name=d.name,i=sample_closest.i}
-    engine.mxsamplesload(self.buffer,sample_closest.filename)
-    self.buffer=self.buffer+1
-    if self.buffer>79 then
-      self.buffer=0
-    end
-    -- if this next buffer is being used, get it ready to be overridden
-    if self.buffers_used[self.buffer]~=nil then
-      self.instrument[self.buffers_used[self.buffer].name][self.buffers_used[self.buffer].i].buffer=-1
-    end
+    self:_load_into_buffer(d.name,sample_closest.i)
   end
 
   return voice_i
@@ -512,8 +569,8 @@ end
 function MxSamples:get_voice()
   -- gets voice based on the oldest that is not being used
   local oldest={i=0,age=current_time()}
-  for i,voice in ipairs(self.voice) do
-    -- print(i,voice.active.midi)
+  for i=1,self.max_active do
+    local voice=self.voice[i]
     if voice.age<oldest.age and voice.active.midi==0 then
       oldest={i=i,age=voice.age}
     end
@@ -521,7 +578,8 @@ function MxSamples:get_voice()
 
   -- found none - now just take the oldest
   if oldest.i==0 then
-    for i,voice in ipairs(self.voice) do
+    for i=1,self.max_active do
+      local voice=self.voice[i]
       if voice.age<oldest.age then
         oldest={i=i,age=voice.age}
       end

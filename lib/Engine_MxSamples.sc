@@ -124,6 +124,7 @@ Engine_MxSamples : CroneEngine {
 		mxsamplesBusReverb = Bus.audio(context.server,2);
 		context.server.sync;
 		mxsamplesFX = Synth.new("mxfx",[\out,0,\inDelay,mxsamplesBusDelay,\inReverb,mxsamplesBusReverb]);
+		mxsamplesFX.run(false); // demarre en pause : zero cout CPU tant que reverb/delay inutilises
 		context.server.sync;
 
 
@@ -162,7 +163,6 @@ Engine_MxSamples : CroneEngine {
 			var numCh = min(sampleBuffChannels[msg[2]], 2); // 1→mono, 2→stéréo, >2→best-effort stéréo
 			if (mxsamplesVoices.at(name)!=nil,{
 				if (mxsamplesVoices.at(name).isRunning==true,{
-					("stealing "++name).postln;
 					mxsamplesVoices.at(name).free;
 				});
 			});
@@ -185,12 +185,17 @@ Engine_MxSamples : CroneEngine {
 					\delaySend,msg[12],
 					\reverbSend,msg[13],
 					\sampleStart,msg[14] ]).onFree({
-					("freed "++name).postln;
 					NetAddr("127.0.0.1", 10111).sendMsg("voice",name,0);
 				});
 			);
 			mxsamplesVoicesOn.put(name,1);
 			NodeWatcher.register(mxsamplesVoices.at(name));
+		});
+
+		// pause/reprend le synth FX (reverb+delay) : .run(false) supprime son cout CPU
+		// sans le detruire (reversible). Utile si reverb/delay inutilises.
+		this.addCommand("mxsamplesfx","i", { arg msg;
+			mxsamplesFX.run(msg[1]==1);
 		});
 
 		this.addCommand("mxsamplesoff","i", { arg msg;
