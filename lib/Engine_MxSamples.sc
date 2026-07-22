@@ -56,57 +56,66 @@ Engine_MxSamples : CroneEngine {
 			Out.ar(out,snd);
 		}).add;
 
-		// build a mono (mxPlayer1) and a stereo (mxPlayer2) variant; numCh is fixed
-		// at compile time so each produces the correct graph for its buffer type
+		// build mono (mxPlayer1) and stereo (mxPlayer2) variants; numCh is fixed
+		// at compile time so each produces the correct graph for its buffer type.
+		// chaque variante existe aussi en "lite" (sans LPF/HPF ni sorties sends) :
+		// choisie au note-on quand filtres au neutre et sends a 0, pour reduire
+		// le cout CPU par voix (cas nominal du script)
 		[1, 2].do({ arg numCh;
-			SynthDef("mxPlayer" ++ numCh,{
-					arg outDelay,outReverb,bufnum, amp=0.0, t_trig=0,envgate=1,name=1,
-					attack=0.015,decay=1,release=2,sustain=0.9,
-					sampleStart=0,sampleEnd=1,rate=1,pan=0,
-					lpf=20000,hpf=10,delaySend=0,reverbSend=0;
+			[true, false].do({ arg full;
+				SynthDef("mxPlayer" ++ numCh ++ (full.if({""},{"lite"})),{
+						arg outDelay,outReverb,bufnum, amp=0.0, t_trig=0,envgate=1,name=1,
+						attack=0.015,decay=1,release=2,sustain=0.9,
+						sampleStart=0,sampleEnd=1,rate=1,pan=0,
+						lpf=20000,hpf=10,delaySend=0,reverbSend=0;
 
-					// vars
-					var ender,snd;
+						// vars
+						var ender,snd;
 
-					ender = EnvGen.ar(
-						Env.new(
-							curve: 'cubed',
-							levels: [0,1,sustain,0],
-							times: [attack+0.015,decay,release],
-							releaseNode: 2,
-						),
-						gate: envgate,
-					);
+						ender = EnvGen.ar(
+							Env.new(
+								curve: 'cubed',
+								levels: [0,1,sustain,0],
+								times: [attack+0.015,decay,release],
+								releaseNode: 2,
+							),
+							gate: envgate,
+						);
 
-					snd = PlayBuf.ar(numCh, bufnum,
-						rate:BufRateScale.kr(bufnum)*rate,
-						startPos: ((sampleEnd*(rate<0))*BufFrames.kr(bufnum))+(sampleStart/1000*48000),
-						trigger:t_trig,
-					);
-					snd = LPF.ar(snd,lpf);
-					snd = HPF.ar(snd,hpf);
-					if (numCh == 1, {
-						// mono: même signal dans les deux Pan2 → centré à pan=0, sans décorrélation
-						snd = Mix.ar([
-							Pan2.ar(snd,-1+(2*pan),amp),
-							Pan2.ar(snd,1+(2*pan),amp),
-						]);
-					}, {
-						snd = Mix.ar([
-							Pan2.ar(snd[0],-1+(2*pan),amp),
-							Pan2.ar(snd[1],1+(2*pan),amp),
-						]);
-					});
-					snd = snd * amp * ender;
+						snd = PlayBuf.ar(numCh, bufnum,
+							rate:BufRateScale.kr(bufnum)*rate,
+							startPos: ((sampleEnd*(rate<0))*BufFrames.kr(bufnum))+(sampleStart/1000*48000),
+							trigger:t_trig,
+						);
+						if (full, {
+							snd = LPF.ar(snd,lpf);
+							snd = HPF.ar(snd,hpf);
+						});
+						if (numCh == 1, {
+							// mono: même signal dans les deux Pan2 → centré à pan=0, sans décorrélation
+							snd = Mix.ar([
+								Pan2.ar(snd,-1+(2*pan),amp),
+								Pan2.ar(snd,1+(2*pan),amp),
+							]);
+						}, {
+							snd = Mix.ar([
+								Pan2.ar(snd[0],-1+(2*pan),amp),
+								Pan2.ar(snd[1],1+(2*pan),amp),
+							]);
+						});
+						snd = snd * amp * ender;
 
-					// SendTrig.kr(Impulse.kr(1),name,1);
-					DetectSilence.ar(snd,doneAction:2);
-					// just in case, release after 1 minute
-					FreeSelf.kr(TDelay.kr(DC.kr(1),60));
-					Out.ar(outDelay,snd*delaySend);
-					Out.ar(outReverb,snd*reverbSend);
-					Out.ar(0,snd)
-			}).add;
+						// SendTrig.kr(Impulse.kr(1),name,1);
+						DetectSilence.ar(snd,doneAction:2);
+						// just in case, release after 1 minute
+						FreeSelf.kr(TDelay.kr(DC.kr(1),60));
+						if (full, {
+							Out.ar(outDelay,snd*delaySend);
+							Out.ar(outReverb,snd*reverbSend);
+						});
+						Out.ar(0,snd)
+				}).add;
+			});
 		});
 
 		// initialize fx synth and bus
@@ -152,13 +161,16 @@ Engine_MxSamples : CroneEngine {
 		this.addCommand("mxsampleson","iiffffffffffff", { arg msg;
 			var name=msg[1];
 			var numCh = min(sampleBuffChannels[msg[2]], 2); // 1→mono, 2→stéréo, >2→best-effort stéréo
+			// variante lite si filtres au neutre (lpf>=19k, hpf<=30) et sends a 0 :
+			// choix definitif au note-on (les voix sont set-and-forget, seul envgate change)
+			var lite = (msg[10] >= 19000) and: { msg[11] <= 30 } and: { msg[12] <= 0 } and: { msg[13] <= 0 };
 			if (mxsamplesVoices.at(name)!=nil,{
 				if (mxsamplesVoices.at(name).isRunning==true,{
 					mxsamplesVoices.at(name).free;
 				});
 			});
 			mxsamplesVoices.put(name,
-				Synth.before(mxsamplesFX,"mxPlayer" ++ numCh,[
+				Synth.before(mxsamplesFX,"mxPlayer" ++ numCh ++ (lite.if({"lite"},{""})),[
 					\t_trig,1,
 					\outDelay,mxsamplesBusDelay,
 					\outReverb,mxsamplesBusReverb,

@@ -119,13 +119,15 @@ function MxSamples:new(args)
   end
 
   -- add parameters
-  params:add_group("MX.SAMPLES",21)
+  params:add_group("MX.SAMPLES",22)
   local filter_freq=controlspec.new(20,20000,'exp',0,20000,'Hz')
   params:add {
     type='control',
     id="mxsamples_amp",
     name="amp",
   controlspec=controlspec.new(0,10,'lin',0,1.0,'amp')}
+  params:add{type="number",id="mxsamples_polyphony",name="polyphony",min=1,max=40,default=16}
+  params:set_action("mxsamples_polyphony",function(v) l:max_voices(v) end)
   params:add {
     type='control',
     id="mxsamples_pan",
