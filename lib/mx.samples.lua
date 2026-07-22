@@ -190,13 +190,24 @@ function MxSamples:new(args)
     id="mxsamples_delay_send",
     name="delay send",
   controlspec=controlspec.new(0,100,'lin',0,0,'%',1/100)}
-  -- l'FX (reverb+delay) ne tourne que si un send > 0 : economie CPU quand inutilise
+  -- l'FX engine (delay) ne tourne que si le send delay > 0 : economie CPU quand inutilise
   local function update_fx()
     if engine.name~="MxSamples" then return end
-    l:fx(params:get("mxsamples_reverb_send")>0 or params:get("mxsamples_delay_send")>0)
+    l:fx(params:get("mxsamples_delay_send")>0)
   end
-  params:set_action("mxsamples_reverb_send",update_fx)
   params:set_action("mxsamples_delay_send",update_fx)
+  -- la reverb passe par la reverb systeme norns (Zita dans crone, autre coeur
+  -- que scsynth) : le send 0-100% pilote le niveau d'entree engine en dB
+  local function update_reverb_route()
+    local pct=params:get("mxsamples_reverb_send")
+    if pct>0 then
+      params:set("reverb",2) -- ON
+      params:set("rev_eng_input",util.clamp(20*math.log10(pct/100),-60,0))
+    else
+      params:set("rev_eng_input",-math.huge) -- -inf dB : engine muet vers la reverb
+    end
+  end
+  params:set_action("mxsamples_reverb_send",update_reverb_route)
   params:add {
     type='control',
     id="mxsamples_delay_times",
@@ -511,7 +522,7 @@ function MxSamples:on(d)
       d.lpf or params:get("mxsamples_lpf_mxsamples"),
       d.hpf or params:get("mxsamples_hpf_mxsamples"),
       d.delay_send or params:get("mxsamples_delay_send")/100,
-      d.reverb_send or params:get("mxsamples_reverb_send")/100,
+      0, -- reverb send engine toujours 0 : la reverb est la reverb systeme norns
     d.sample_start or params:get("mxsamples_sample_start"))
   end
 

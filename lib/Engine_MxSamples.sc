@@ -39,9 +39,11 @@ Engine_MxSamples : CroneEngine {
 		sampleBuffChannels = Array.fill(80, { 2 }); // défaut stéréo tant que non chargé
 		sampleBuffMxSamplesDelay = Buffer.alloc(context.server,48000,2);
 
-		SynthDef("mxfx",{ 
-			arg inDelay, inReverb, reverb=0.05, out, secondsPerBeat=1,delayBeats=4,delayFeedback=0.1,bufnumDelay;
-			var snd,snd2,y,z;
+		// delay uniquement : la reverb est deportee vers la reverb systeme norns
+		// (Zita dans crone, autre coeur que scsynth) pour repartir la charge CPU
+		SynthDef("mxfx",{
+			arg inDelay, inReverb, out, secondsPerBeat=1,delayBeats=4,delayFeedback=0.1,bufnumDelay;
+			var snd;
 
 			// delay
 			snd = In.ar(inDelay,2);
@@ -50,19 +52,8 @@ Engine_MxSamples : CroneEngine {
 				2,
 				secondsPerBeat*delayBeats,
 				secondsPerBeat*delayBeats*LinLin.kr(delayFeedback,0,1,2,128),// delayFeedback should vary between 2 and 128
-			); 
+			);
 			Out.ar(out,snd);
-
-			// reverb
-			snd2 = In.ar(inReverb,2);
-			snd2 = DelayN.ar(snd2, 0.03, 0.03);
-			snd2 = CombN.ar(snd2, 0.1, {Rand(0.01,0.099)}!32, 4);
-			snd2 = SplayAz.ar(2, snd2);
-			snd2 = LPF.ar(snd2, 1500);
-			5.do{snd2 = AllpassN.ar(snd2, 0.1, {Rand(0.01,0.099)}!2, 3)};
-			snd2 = LPF.ar(snd2, 1500);
-			snd2 = LeakDC.ar(snd2);
-			Out.ar(out,snd2);
 		}).add;
 
 		// build a mono (mxPlayer1) and a stereo (mxPlayer2) variant; numCh is fixed

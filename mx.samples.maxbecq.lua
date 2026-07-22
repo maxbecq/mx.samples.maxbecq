@@ -97,6 +97,10 @@ available_instruments={
 local AUTOSAVE_METRO_TIME = 10
 
 function init()
+  -- la reverb du script est la reverb systeme norns (crone) : on capture son
+  -- etat avant de le piloter, pour le restaurer dans cleanup()
+  saved_system_reverb={rev=params:get("reverb"),eng=params:get("rev_eng_input")}
+
   cmd="mkdir -p ".._path.audio.."mx.samples/"
   print(cmd)
   os.execute(cmd)
@@ -149,7 +153,15 @@ function init()
   	-- On lance les tâches de fond
 	autosave_metro = metro.init(autosave_tasks, AUTOSAVE_METRO_TIME)
   autosave_metro:start()
-  
+
+end
+
+function cleanup()
+  -- restaure l'etat de la reverb systeme pour ne pas impacter les autres scripts
+  if saved_system_reverb~=nil then
+    params:set("reverb",saved_system_reverb.rev)
+    params:set("rev_eng_input",saved_system_reverb.eng)
+  end
 end
 
 function setup_midi()
