@@ -439,9 +439,26 @@ end
 
 function redraw()
   screen.clear()
+  local ps=skeys~=nil and skeys.preload_state or nil
   if downloading then
     msg=UI.Message.new({"downloading",available_instruments[download_available].name,"please wait..."})
     msg:redraw()
+  elseif ps~=nil then
+    -- ecran de chargement temporaire pendant le preload : la progression
+    -- compte les confirmations reelles du serveur, pas les demandes envoyees
+    screen.level(15)
+    screen.move(64,16)
+    screen.text_center("chargement")
+    screen.move(64,28)
+    screen.text_center(ps.name:gsub("_"," "))
+    screen.move(64,40)
+    screen.text_center(ps.loaded.."/"..ps.total)
+    screen.level(1)
+    screen.rect(14,46,100,6)
+    screen.fill()
+    screen.level(15)
+    screen.rect(14,46,math.floor(100*ps.loaded/math.max(ps.total,1)),6)
+    screen.fill()
   elseif download_available>0 then
     local s=available_instruments[download_available].name..' ('..available_instruments[download_available].size..' MB)'
     msg=UI.Message.new({"are you sure you","want to download",s.."?","k2 = no, k3 = yes"})

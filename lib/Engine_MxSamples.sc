@@ -149,13 +149,25 @@ Engine_MxSamples : CroneEngine {
 		this.addCommand("mxsamplesrelease","", { arg msg;
 			(0..79).do({arg i; sampleBuffMxSamples[i].free});
 		});
-		this.addCommand("mxsamplesload","is", { arg msg;
-			// lua is sending 0-index
+		this.addCommand("mxsamplesload","iis", { arg msg;
+			// lua is sending 0-index; msg[2] est un id de chargement que lua
+			// utilise pour apparier la confirmation (slot reutilise entre-temps)
+			var i = msg[1];
+			var id = msg[2];
+			sampleBuffMxSamples[i].free;
+			sampleBuffMxSamples[i] = Buffer.read(context.server, msg[3], action: { arg buf;
+				sampleBuffChannels[i] = buf.numChannels;
+				// confirme a lua que la lecture disque est terminee :
+				// avant ca, jouer ce slot sortirait le contenu perime
+				NetAddr("127.0.0.1", 10111).sendMsg("mxsamples_loaded", i, id);
+			});
+		});
+		this.addCommand("mxsamplesunload","i", { arg msg;
+			// evince un slot (plafond ram cote lua) : libere le buffer serveur
 			var i = msg[1];
 			sampleBuffMxSamples[i].free;
-			sampleBuffMxSamples[i] = Buffer.read(context.server, msg[2], action: { arg buf;
-				sampleBuffChannels[i] = buf.numChannels;
-			});
+			sampleBuffMxSamples[i] = Buffer.new(context.server);
+			sampleBuffChannels[i] = 2;
 		});
 
 		this.addCommand("mxsampleson","iiffffffffffff", { arg msg;

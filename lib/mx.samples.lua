@@ -7,6 +7,11 @@ local Formatters=require 'formatters'
 local MxSamples={}
 
 local MaxVoices=40
+local MaxBuffers=80
+-- plafond RAM estimee pour les buffers samples dans scsynth (le norns a ~976 MB
+-- au total, ~550 MB disponibles). estimation : wav 16 bits sur disque -> float32
+-- en memoire = 2x la taille disque. au-dela, le kernel OOM-kill scsynth.
+local RamBudgetBytes=250*1024*1024
 local delay_rates_names={"whole-note","half-note","quarter note","eighth note","sixteenth note","thirtysecond"}
 local delay_rates={4,2,1,1/2,1/4,1/8,1/16}
 local delay_last_clock=0
@@ -65,6 +70,16 @@ local function list_files(d,recurisve)
   return _list_files(d,{},recursive)
 end
 
+local function file_size_bytes(fname)
+  local f=io.open(fname,"rb")
+  if f==nil then
+    return 0
+  end
+  local size=f:seek("end")
+  f:close()
+  return size
+end
+
 local function split_str(inputstr,sep)
   if sep==nil then
     sep="%s"
@@ -90,7 +105,10 @@ function MxSamples:new(args)
   l.debug=args.debug --true-- args.debug -- true --args.debug
   l.instrument={} -- map instrument name to list of samples
   l.buffers_used={} -- map buffer number to data
-  l.buffer=0
+  l.ram_used=0 -- octets estimes occupes par les buffers charges dans scsynth
+  l.load_counter=0 -- id de chargement, pour apparier les confirmations osc
+  l.preload_state=nil -- {name,loaded,total} pendant un preload (lu par l'UI)
+  l.preload_clock=nil
   l.voice={} -- list of voices and how hold they are
   l.voice_last=1
   for i=1,MaxVoices do -- initiate with 40 voices
@@ -258,6 +276,17 @@ function MxSamples:new(args)
         l.voice[voice_num].age=current_time()
         l.voice[voice_num].active={name="",midi=0}
       end
+    elseif path=="mxsamples_loaded" then
+      -- confirmation serveur : la lecture disque du slot est terminee, le sample
+      -- est reellement jouable. l'id evite d'apparier une confirmation tardive
+      -- avec un slot deja reutilise par un autre sample.
+      local slot=args[1]
+      local id=args[2]
+      local u=l.buffers_used[slot]
+      if u~=nil and u.load_id==id then
+        l.instrument[u.name][u.i].buffer=slot
+        l.instrument[u.name][u.i].loading=nil
+      end
     end
   end
 
@@ -293,8 +322,11 @@ function MxSamples:reset()
   for name,_ in pairs(self.instrument) do
     for i,_ in ipairs(self.instrument[name]) do
       self.instrument[name][i].buffer=-1 -- reset buffer info
+      self.instrument[name][i].loading=nil
     end
   end
+  self.buffers_used={}
+  self.ram_used=0
 
   for i,_ in ipairs(self.voice) do
     self.voice[i]={age=current_time(),active={name="",midi=0}} -- reset voices
@@ -350,53 +382,258 @@ function MxSamples:add(sample)
   table.insert(self.instrument[sample.name],sample)
 end
 
-function MxSamples:_load_into_buffer(name,i)
-  -- charge instrument[name][i] dans le prochain slot circulaire (0..79)
+function MxSamples:_sample_ram_bytes(name,i)
+  -- ram estimee du sample dans scsynth : wav 16 bits -> float32 = 2x le disque
   local sample=self.instrument[name][i]
-  sample.buffer=self.buffer
-  self.buffers_used[self.buffer]={name=name,i=i}
-  engine.mxsamplesload(self.buffer,sample.filename)
-  self.buffer=self.buffer+1
-  if self.buffer>79 then
-    self.buffer=0
+  if sample.ram_bytes==nil then
+    sample.ram_bytes=file_size_bytes(sample.filename)*2
   end
-  -- si le prochain slot est occupe, le marquer a reevincer
-  if self.buffers_used[self.buffer]~=nil then
-    local u=self.buffers_used[self.buffer]
-    self.instrument[u.name][u.i].buffer=-1
+  return sample.ram_bytes
+end
+
+function MxSamples:_unload_slot(slot)
+  -- decharge un slot : marque le sample non charge et libere le buffer scsynth
+  local u=self.buffers_used[slot]
+  if u==nil then
+    do return end
+  end
+  self.instrument[u.name][u.i].buffer=-1
+  self.instrument[u.name][u.i].loading=nil
+  self.ram_used=self.ram_used-self:_sample_ram_bytes(u.name,u.i)
+  self.buffers_used[slot]=nil
+  engine.mxsamplesunload(slot)
+end
+
+function MxSamples:_lru_slot(exclude)
+  -- slot occupe le moins recemment utilise, hors `exclude`. les slots dont la
+  -- lecture disque est en cours sont evinces en dernier recours : les decharger
+  -- perdrait leur confirmation osc (load_id perime) et bloquerait la jauge
+  local best,best_t
+  local best_loading,best_loading_t
+  for s=0,MaxBuffers-1 do
+    local u=self.buffers_used[s]
+    if u~=nil and s~=exclude then
+      if self.instrument[u.name][u.i].loading==true then
+        if best_loading==nil or u.last_used<best_loading_t then
+          best_loading=s
+          best_loading_t=u.last_used
+        end
+      else
+        if best==nil or u.last_used<best_t then
+          best=s
+          best_t=u.last_used
+        end
+      end
+    end
+  end
+  return best or best_loading
+end
+
+function MxSamples:_acquire_slot()
+  -- slot vide si possible, sinon evince le moins recemment utilise
+  for s=0,MaxBuffers-1 do
+    if self.buffers_used[s]==nil then
+      return s
+    end
+  end
+  local slot=self:_lru_slot(nil)
+  self:_unload_slot(slot)
+  return slot
+end
+
+function MxSamples:_load_into_buffer(name,i)
+  -- charge instrument[name][i] dans un slot libre (sinon evince le slot le moins
+  -- recemment utilise). le sample n'est marque charge (buffer>-1) qu'a la
+  -- confirmation osc du serveur : jouer avant jouerait le contenu perime du slot
+  local sample=self.instrument[name][i]
+  local slot=self:_acquire_slot()
+  sample.buffer=-1
+  sample.loading=true
+  sample.load_time=current_time()
+  self.load_counter=self.load_counter+1
+  self.buffers_used[slot]={name=name,i=i,load_id=self.load_counter,last_used=current_time()}
+  self.ram_used=self.ram_used+self:_sample_ram_bytes(name,i)
+  engine.mxsamplesload(slot,self.load_counter,sample.filename)
+  -- plafond ram : evince les slots les moins recemment utilises jusqu'a repasser
+  -- sous le budget (jamais celui qu'on vient de demander) ; si plus rien n'est
+  -- evincable, tolere un depassement temporaire le temps des confirmations
+  local guard=0
+  while self.ram_used>RamBudgetBytes and guard<MaxBuffers do
+    local victim=self:_lru_slot(slot)
+    if victim==nil then
+      break
+    end
+    self:_unload_slot(victim)
+    guard=guard+1
   end
 end
 
+function MxSamples:_preload_order(name)
+  -- ordre de priorite de prechargement : couverture uniforme du clavier dans
+  -- chaque couche (dynamique + release). quand le budget ram ne permet pas de
+  -- tout precharger, le fallback "sample charge le plus proche" ne repitche
+  -- ainsi que d'un ou deux demi-tons au lieu de plusieurs tons (l'ordre naturel
+  -- des fichiers est un tri alphabetique qui laisse des pans de clavier vides)
+  local samples=self.instrument[name]
+  -- une seule variation par note et par couche ; les autres en fin de liste
+  local layers={}
+  local layer_keys={}
+  local extra_variations={}
+  local seen={}
+  for i,sample in ipairs(samples) do
+    local key=tostring(sample.dynamic).."_"..(sample.is_release and 1 or 0)
+    local note_key=key.."/"..tostring(sample.midi)
+    if seen[note_key] then
+      table.insert(extra_variations,i)
+    else
+      seen[note_key]=true
+      if layers[key]==nil then
+        layers[key]={}
+        table.insert(layer_keys,key)
+      end
+      table.insert(layers[key],{i=i,midi=sample.midi})
+    end
+  end
+  table.sort(layer_keys)
+  -- ordre intra-couche par point-le-plus-eloigne : note mediane d'abord, puis a
+  -- chaque etape la note qui maximise la distance midi minimale aux deja choisies
+  for _,key in ipairs(layer_keys) do
+    local notes=layers[key]
+    table.sort(notes,function(a,b) return a.midi<b.midi end)
+    local ordered={}
+    local mind={} -- distance midi min aux notes choisies ; -1 = deja choisie
+    local first=math.ceil(#notes/2)
+    table.insert(ordered,notes[first])
+    for j,note in ipairs(notes) do
+      mind[j]=math.abs(note.midi-notes[first].midi)
+    end
+    mind[first]=-1
+    for _=2,#notes do
+      local best,best_d
+      for j,d in ipairs(mind) do
+        if d>=0 and (best==nil or d>best_d) then
+          best=j
+          best_d=d
+        end
+      end
+      table.insert(ordered,notes[best])
+      for j,note in ipairs(notes) do
+        if mind[j]>=0 then
+          mind[j]=math.min(mind[j],math.abs(note.midi-notes[best].midi))
+        end
+      end
+      mind[best]=-1
+    end
+    layers[key]=ordered
+  end
+  -- round-robin entre les couches : chaque couche recoit une part egale des
+  -- slots, aucune couche absente du sous-ensemble precharge
+  local order={}
+  local rank=1
+  local added=true
+  while added do
+    added=false
+    for _,key in ipairs(layer_keys) do
+      local note=layers[key][rank]
+      if note~=nil then
+        table.insert(order,note.i)
+        added=true
+      end
+    end
+    rank=rank+1
+  end
+  for _,i in ipairs(extra_variations) do
+    table.insert(order,i)
+  end
+  return order
+end
+
 function MxSamples:preload(name,on_progress)
-  -- precharge tous les samples d'un instrument hors du hot path audio
+  -- precharge les samples d'un instrument hors du hot path audio,
+  -- dans la limite du plafond ram (le reste restera en lazy-load)
   name=name:gsub(" ","_")
   local samples=self.instrument[name]
   if samples==nil then
     print("mx.samples preload: instrument inconnu '"..name.."'")
     return
   end
-  local total=#samples
-  local n=math.min(total,80) -- plafond dur = nb de buffers
-  if total>80 then
-    -- cap explicite, pas de troncature silencieuse
-    print("mx.samples preload: '"..name.."' a "..total.." samples ; prechargement des "..n.." premiers, le reste restera en lazy-load")
+  -- un seul preload a la fois : annule le precedent (changements d'instrument
+  -- rapides, sinon les preloads concurrents se disputent le ring de buffers)
+  if self.preload_clock~=nil then
+    clock.cancel(self.preload_clock)
+    self.preload_clock=nil
   end
-  clock.run(function()
-    for i=1,n do
-      if samples[i].buffer<0 then
+  local total=#samples
+  -- selection dans l'ordre de couverture du clavier (_preload_order), plafond
+  -- dur = nb de slots, plafond souple = 80% du budget ram. la marge de 20%
+  -- absorbe les lazy-loads des samples non precharges, sinon jouer evince les
+  -- samples qu'on vient de precharger
+  local list={}
+  local ram=0
+  local budget=RamBudgetBytes*0.8
+  for _,i in ipairs(self:_preload_order(name)) do
+    if #list>=MaxBuffers then
+      break
+    end
+    local rb=self:_sample_ram_bytes(name,i)
+    if ram+rb>budget then
+      break
+    end
+    ram=ram+rb
+    table.insert(list,i)
+  end
+  local n=#list
+  if n<total then
+    -- cap explicite, pas de troncature silencieuse
+    print(string.format("mx.samples preload: '%s' %d/%d samples precharges (~%d MB ram), le reste en lazy-load",name,n,total,math.floor(ram/1024/1024)))
+  end
+  self.preload_state={name=name,loaded=0,total=n}
+  self.preload_clock=clock.run(function()
+    for _,i in ipairs(list) do
+      if samples[i].buffer<0 and samples[i].loading~=true then
         self:_load_into_buffer(name,i)
-        clock.sleep(0.02) -- etale l'I/O ; ~1,6 s pour 80 samples
+        clock.sleep(0.02) -- etale l'I/O
       end
-      if on_progress then on_progress(i,n) end
+    end
+    -- attend les confirmations du serveur (buffer>-1 = reellement charge).
+    -- sort aussi quand plus rien n'est en attente (tout confirme ou evince) :
+    -- sinon un sample evince pendant le chargement bloquerait la jauge
+    local waited=0
+    while waited<20 do
+      local loaded=0
+      local pending=0
+      for _,i in ipairs(list) do
+        if samples[i].buffer>-1 then
+          loaded=loaded+1
+        elseif samples[i].loading==true then
+          pending=pending+1
+        end
+      end
+      self.preload_state.loaded=loaded
+      if on_progress then on_progress(loaded,n) end
+      if loaded>=n or pending==0 then
+        break
+      end
+      clock.sleep(0.1)
+      waited=waited+0.1
     end
     if self.debug then
-      print("mx.samples preload termine: "..name.." ("..n.."/"..total..")")
+      print("mx.samples preload termine: "..name.." ("..self.preload_state.loaded.."/"..total..")")
     end
+    self.preload_state=nil
+    self.preload_clock=nil
   end)
 end
 
 function MxSamples:on(d)
   -- {name="piano",midi=40,velocity=60,is_release=True|False}
+
+  -- pas de jeu pendant le prechargement : le fallback "sample charge le plus
+  -- proche" sortirait une mauvaise couche de velocite ou un repitch lointain,
+  -- et les lazy-loads concurrents evinceraient des samples en cours de preload
+  if self.preload_state~=nil then
+    return -1
+  end
 
   -- use spaes or undersores
   d.name=d.name:gsub(" ","_")
@@ -463,6 +700,11 @@ function MxSamples:on(d)
 
   local voice_i=-1
   if sample_closest_loaded.buffer>-1 then
+    -- marque le slot comme recemment utilise (protege du lru)
+    local u=self.buffers_used[sample_closest_loaded.buffer]
+    if u~=nil then
+      u.last_used=current_time()
+    end
     -- assign the new voice
     voice_i=self:get_voice()
     self.voice[voice_i].active={name=d.name,midi=d.midi,i=sample_closest_loaded.i}
@@ -528,10 +770,11 @@ function MxSamples:on(d)
     d.sample_start or params:get("mxsamples_sample_start"))
   end
 
-  -- load sample if not loaded
-  if sample_closest.buffer==-1 then
+  -- load sample if not loaded (sauf si une lecture est deja en cours ;
+  -- retry apres 5 s au cas ou la lecture a echoue sans confirmation)
+  if sample_closest.buffer==-1 and (sample_closest.loading~=true or (current_time()-(sample_closest.load_time or 0))>5) then
     if self.debug then
-      print("loading "..d.name.." "..sample_closest.i.." into buffer "..self.buffer)
+      print("loading "..d.name.." "..sample_closest.i)
     end
     self:_load_into_buffer(d.name,sample_closest.i)
   end
