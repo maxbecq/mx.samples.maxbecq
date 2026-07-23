@@ -8,10 +8,17 @@ local MxSamples={}
 
 local MaxVoices=40
 local MaxBuffers=80
--- plafond RAM estimee pour les buffers samples dans scsynth (le norns a ~976 MB
--- au total, ~550 MB disponibles). estimation : wav 16 bits sur disque -> float32
--- en memoire = 2x la taille disque. au-dela, le kernel OOM-kill scsynth.
-local RamBudgetBytes=250*1024*1024
+-- plafond RAM estimee pour les buffers samples dans scsynth. mesure sur
+-- l'appareil : 976 MB au total, ~390 MB fixes (crone+jackd+sclang+matron),
+-- MemAvailable reel ~300 MB et pas de swap. en outre le RSS de scsynth depasse
+-- durablement ram_used : la memoire des buffers evinces est rendue a
+-- l'allocateur mais pas a l'OS (fragmentation du tas, tailles toutes
+-- differentes). budget volontairement bas pour absorber cette derive, sinon le
+-- systeme thrash sur la SD (gel complet, pire qu'un OOM-kill de scsynth).
+-- estimation par sample : wav 16 bits sur disque -> float32 = 2x la taille disque
+local RamBudgetBytes=140*1024*1024
+-- marge de MemAvailable a preserver pour le reste du systeme lors d'un preload
+local MemKeepFreeBytes=150*1024*1024
 local delay_rates_names={"whole-note","half-note","quarter note","eighth note","sixteenth note","thirtysecond"}
 local delay_rates={4,2,1,1/2,1/4,1/8,1/16}
 local delay_last_clock=0
@@ -78,6 +85,23 @@ local function file_size_bytes(fname)
   local size=f:seek("end")
   f:close()
   return size
+end
+
+local function mem_available_bytes()
+  -- MemAvailable reel du systeme, nil si illisible (dev hors norns)
+  local f=io.open("/proc/meminfo","r")
+  if f==nil then
+    return nil
+  end
+  for line in f:lines() do
+    local kb=line:match("^MemAvailable:%s+(%d+)%s+kB")
+    if kb~=nil then
+      f:close()
+      return tonumber(kb)*1024
+    end
+  end
+  f:close()
+  return nil
 end
 
 local function split_str(inputstr,sep)
@@ -576,7 +600,16 @@ function MxSamples:preload(name,on_progress)
   -- samples qu'on vient de precharger
   local list={}
   local ram=0
-  local budget=RamBudgetBytes*0.8
+  -- garde-fou : ne jamais precharger au-dela de la memoire systeme reellement
+  -- disponible moins une reserve. prudemment sans crediter les evictions a
+  -- venir : leur memoire n'est pas rendue a l'OS (fragmentation du tas scsynth)
+  local budget=RamBudgetBytes
+  local avail=mem_available_bytes()
+  if avail~=nil and avail-MemKeepFreeBytes<budget then
+    budget=math.max(0,avail-MemKeepFreeBytes)
+    print(string.format("mx.samples preload: memoire systeme basse (%d MB dispo), budget reduit a %d MB",math.floor(avail/1024/1024),math.floor(budget/1024/1024)))
+  end
+  budget=budget*0.8
   for _,i in ipairs(self:_preload_order(name)) do
     if #list>=MaxBuffers then
       break
