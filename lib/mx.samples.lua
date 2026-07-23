@@ -107,12 +107,13 @@ function MxSamples:new(args)
   l.buffers_used={} -- map buffer number to data
   l.ram_used=0 -- octets estimes occupes par les buffers charges dans scsynth
   l.load_counter=0 -- id de chargement, pour apparier les confirmations osc
+  l.gen_counter=0 -- id de note, pour apparier les liberations de voix osc
   l.preload_state=nil -- {name,loaded,total} pendant un preload (lu par l'UI)
   l.preload_clock=nil
   l.voice={} -- list of voices and how hold they are
   l.voice_last=1
   for i=1,MaxVoices do -- initiate with 40 voices
-    l.voice[i]={age=current_time(),active={name="",midi=0}}
+    l.voice[i]={age=current_time(),active={name="",midi=0},gen=0}
   end
   l.max_active=MaxVoices -- nb de voix reellement utilisables (reglable via max_voices)
 
@@ -270,11 +271,16 @@ function MxSamples:new(args)
 
   osc.event=function(path,args,from)
     if path=="voice" then
+      -- liberation d'une voix par le serveur (fin de note ou de fondu de vol).
+      -- le gen evite de marquer libre une voix deja reutilisee par une note
+      -- plus recente : sinon l'allocateur re-volerait une voix active
       local voice_num=args[1]
       local onoff=args[2]
-      if onoff==0 and voice_num~=nil then
-        l.voice[voice_num].age=current_time()
-        l.voice[voice_num].active={name="",midi=0}
+      local gen=args[3]
+      local voice=voice_num~=nil and l.voice[voice_num] or nil
+      if onoff==0 and voice~=nil and gen==voice.gen then
+        voice.age=current_time()
+        voice.active={name="",midi=0}
       end
     elseif path=="mxsamples_loaded" then
       -- confirmation serveur : la lecture disque du slot est terminee, le sample
@@ -300,7 +306,7 @@ function MxSamples:max_voices(num_voices)
   for i=num_voices+1,self.max_active do
     if self.voice[i]~=nil and self.voice[i].active.midi~=0 then
       engine.mxsamplesoff(i)
-      self.voice[i]={age=current_time(),active={name="",midi=0}}
+      self.voice[i]={age=current_time(),active={name="",midi=0},gen=0}
     end
   end
   self.max_active=num_voices
@@ -329,7 +335,7 @@ function MxSamples:reset()
   self.ram_used=0
 
   for i,_ in ipairs(self.voice) do
-    self.voice[i]={age=current_time(),active={name="",midi=0}} -- reset voices
+    self.voice[i]={age=current_time(),active={name="",midi=0},gen=0} -- reset voices
   end
 end
 
@@ -708,6 +714,8 @@ function MxSamples:on(d)
     -- assign the new voice
     voice_i=self:get_voice()
     self.voice[voice_i].active={name=d.name,midi=d.midi,i=sample_closest_loaded.i}
+    self.gen_counter=self.gen_counter+1
+    self.voice[voice_i].gen=self.gen_counter
     if self.debug then
       print("sample_closest_loaded: "..sample_closest_loaded.filename.." on voice "..voice_i)
     end
@@ -755,6 +763,7 @@ function MxSamples:on(d)
     end
     engine.mxsampleson(
       voice_i,
+      self.voice[voice_i].gen,
       sample_closest_loaded.buffer,
       rate,
       d.amp or amp,

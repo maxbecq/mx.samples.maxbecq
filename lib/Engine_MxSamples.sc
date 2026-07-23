@@ -170,15 +170,21 @@ Engine_MxSamples : CroneEngine {
 			sampleBuffChannels[i] = 2;
 		});
 
-		this.addCommand("mxsampleson","iiffffffffffff", { arg msg;
+		this.addCommand("mxsampleson","iiiffffffffffff", { arg msg;
 			var name=msg[1];
-			var numCh = min(sampleBuffChannels[msg[2]], 2); // 1→mono, 2→stéréo, >2→best-effort stéréo
+			// gen : id de note renvoye dans l'osc "voice" ; lua ignore ainsi les
+			// liberations perimees (voix deja reutilisee par une nouvelle note)
+			var gen=msg[2];
+			var old=mxsamplesVoices.at(name);
+			var numCh = min(sampleBuffChannels[msg[3]], 2); // 1→mono, 2→stéréo, >2→best-effort stéréo
 			// variante lite si filtres au neutre (lpf>=19k, hpf<=30) et sends a 0 :
 			// choix definitif au note-on (les voix sont set-and-forget, seul envgate change)
-			var lite = (msg[10] >= 19000) and: { msg[11] <= 30 } and: { msg[12] <= 0 } and: { msg[13] <= 0 };
-			if (mxsamplesVoices.at(name)!=nil,{
-				if (mxsamplesVoices.at(name).isRunning==true,{
-					mxsamplesVoices.at(name).free;
+			var lite = (msg[11] >= 19000) and: { msg[12] <= 30 } and: { msg[13] <= 0 } and: { msg[14] <= 0 };
+			if (old!=nil,{
+				if (old.isRunning==true,{
+					// vol de voix en fondu de 50 ms au lieu d'un free sec (clic
+					// en pleine forme d'onde) ; DetectSilence libere ensuite
+					old.set(\release,0.05,\envgate,0);
 				});
 			});
 			mxsamplesVoices.put(name,
@@ -187,20 +193,20 @@ Engine_MxSamples : CroneEngine {
 					\outDelay,mxsamplesBusDelay,
 					\outReverb,mxsamplesBusReverb,
 					\envgate,1,
-					\bufnum,sampleBuffMxSamples[msg[2]],
-					\rate,msg[3],
-					\amp,msg[4],
-					\pan,msg[5],
-					\attack,msg[6],
-					\decay,msg[7],
-					\sustain,msg[8],
-					\release,msg[9],
-					\lpf,msg[10],
-					\hpf,msg[11],
-					\delaySend,msg[12],
-					\reverbSend,msg[13],
-					\sampleStart,msg[14] ]).onFree({
-					NetAddr("127.0.0.1", 10111).sendMsg("voice",name,0);
+					\bufnum,sampleBuffMxSamples[msg[3]],
+					\rate,msg[4],
+					\amp,msg[5],
+					\pan,msg[6],
+					\attack,msg[7],
+					\decay,msg[8],
+					\sustain,msg[9],
+					\release,msg[10],
+					\lpf,msg[11],
+					\hpf,msg[12],
+					\delaySend,msg[13],
+					\reverbSend,msg[14],
+					\sampleStart,msg[15] ]).onFree({
+					NetAddr("127.0.0.1", 10111).sendMsg("voice",name,0,gen);
 				});
 			);
 			mxsamplesVoicesOn.put(name,1);
